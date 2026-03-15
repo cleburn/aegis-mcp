@@ -60,7 +60,7 @@ function parseArgs(): AegisMcpConfig {
         break;
       case '--version':
       case '-v':
-        log('aegis-mcp-server v0.1.0');
+        log('aegis-mcp-server v0.1.2');
         process.exit(0);
         break;
     }
