@@ -17,6 +17,7 @@ import type {
   ResolvedRole,
   EnforcementVerdict,
   OverrideLogEntry,
+  PermissionBoundaries,
 } from '../types.js';
 
 export class EnforcementEngine {
@@ -43,7 +44,7 @@ export class EnforcementEngine {
     const relPath = this.toRelativePath(targetPath);
 
     // 1. Governance-level forbidden paths (highest priority)
-    const forbidden = this.state.governance.permissions.boundaries.forbidden;
+    const forbidden = this.boundaries.forbidden;
     if (forbidden && this.matchesAny(relPath, forbidden)) {
       return {
         allowed: false,
@@ -54,7 +55,7 @@ export class EnforcementEngine {
     }
 
     // 2. Governance-level read_only paths
-    const readOnly = this.state.governance.permissions.boundaries.read_only;
+    const readOnly = this.boundaries.read_only;
     if (readOnly && this.matchesAny(relPath, readOnly)) {
       return {
         allowed: false,
@@ -92,7 +93,7 @@ export class EnforcementEngine {
     }
 
     // 5. Governance-level writable whitelist (if defined, path must match)
-    const writable = this.state.governance.permissions.boundaries.writable;
+    const writable = this.boundaries.writable;
     if (writable && writable.length > 0 && !this.matchesAny(relPath, writable)) {
       return {
         allowed: false,
@@ -114,7 +115,7 @@ export class EnforcementEngine {
     const relPath = this.toRelativePath(targetPath);
 
     // Governance-level forbidden
-    const forbidden = this.state.governance.permissions.boundaries.forbidden;
+    const forbidden = this.boundaries.forbidden;
     if (forbidden && this.matchesAny(relPath, forbidden)) {
       return {
         allowed: false,
@@ -156,7 +157,7 @@ export class EnforcementEngine {
    * Uses governance.permissions.sensitive_patterns when present.
    */
   scanContent(content: string, targetPath: string): EnforcementVerdict {
-    const patterns = this.state.governance.permissions.sensitive_patterns;
+    const patterns = this.state.governance.permissions?.sensitive_patterns;
     if (!patterns || patterns.length === 0) return { allowed: true };
 
     for (const sp of patterns) {
@@ -248,12 +249,14 @@ export class EnforcementEngine {
    * Maps pre_commit booleans to build_commands from constitution or governance.
    */
   getQualityGateCommands(): Array<{ name: string; command: string }> {
-    const gates = this.state.governance.quality_gate.pre_commit;
+    const gates = this.state.governance.quality_gate?.pre_commit;
     const commands = this.state.constitution.build_commands ??
                      this.state.governance.build_commands ??
                      {};
 
     const result: Array<{ name: string; command: string }> = [];
+
+    if (!gates) return result;
 
     if (gates.must_pass_tests && commands.test) {
       result.push({ name: 'tests', command: commands.test });
@@ -276,6 +279,14 @@ export class EnforcementEngine {
   }
 
   // ─── Private Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Safely access permissions.boundaries — returns empty object if missing.
+   * Handles governance files that don't have the skeleton boundaries field.
+   */
+  private get boundaries(): PermissionBoundaries {
+    return this.state.governance.permissions?.boundaries ?? {};
+  }
 
   private matchesAny(path: string, patterns: string[]): boolean {
     return patterns.some((pattern) => {

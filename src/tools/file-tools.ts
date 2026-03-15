@@ -395,13 +395,13 @@ Returns:
         excluded_paths: role.excluded_paths,
         readable_paths: role.readable_paths,
         forbidden_actions: role.forbidden_actions,
-        governance_forbidden_paths: state.governance.permissions.boundaries.forbidden ?? [],
+        governance_forbidden_paths: state.governance.permissions?.boundaries?.forbidden ?? [],
         override_behavior: protocol?.behavior ?? 'warn_confirm_and_log',
         immutable_policies: protocol?.immutable_policies ?? [],
         quality_gates: {
-          must_pass_tests: state.governance.quality_gate.pre_commit.must_pass_tests ?? false,
-          must_pass_lint: state.governance.quality_gate.pre_commit.must_pass_lint ?? false,
-          must_pass_typecheck: state.governance.quality_gate.pre_commit.must_pass_typecheck ?? false,
+          must_pass_tests: state.governance.quality_gate?.pre_commit?.must_pass_tests ?? false,
+          must_pass_lint: state.governance.quality_gate?.pre_commit?.must_pass_lint ?? false,
+          must_pass_typecheck: state.governance.quality_gate?.pre_commit?.must_pass_typecheck ?? false,
         },
       };
 
