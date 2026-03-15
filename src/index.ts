@@ -26,11 +26,20 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { resolve } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { PolicyLoader } from './services/policy-loader.js';
 import { EnforcementEngine } from './services/enforcement-engine.js';
 import { registerTools } from './tools/file-tools.js';
 import type { AegisMcpConfig } from './types.js';
+
+// ─── Version ────────────────────────────────────────────────────────────────
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+const VERSION: string = pkg.version;
 
 // ─── Parse CLI Args ─────────────────────────────────────────────────────────
 
@@ -60,7 +69,7 @@ function parseArgs(): AegisMcpConfig {
         break;
       case '--version':
       case '-v':
-        log('aegis-mcp-server v0.1.2');
+        log(`aegis-mcp-server v${VERSION}`);
         process.exit(0);
         break;
     }
@@ -109,7 +118,7 @@ TOOLS PROVIDED:
 async function main(): Promise<void> {
   const config = parseArgs();
 
-  log('Starting aegis-mcp-server');
+  log(`Starting aegis-mcp-server v${VERSION}`);
   log(`  Project: ${config.projectRoot}`);
   log(`  Role: ${config.role}`);
   log(`  Policy dir: ${config.policyDir ?? '.agentpolicy'}`);
@@ -131,7 +140,7 @@ async function main(): Promise<void> {
   // 3. Create MCP server
   const server = new McpServer({
     name: 'aegis-mcp-server',
-    version: '0.1.0',
+    version: VERSION,
   });
 
   // 4. Register governed tools
