@@ -1,0 +1,41 @@
+{
+  "name": "aegis-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP enforcement layer for the Aegis agent governance specification",
+  "type": "module",
+  "bin": {
+    "aegis-mcp": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "mcp",
+    "ai-governance",
+    "agent-governance",
+    "aegis",
+    "model-context-protocol"
+  ],
+  "author": "Cleburn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cleburn/aegis-mcp.git"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "chokidar": "^4.0.0",
+    "minimatch": "^10.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
