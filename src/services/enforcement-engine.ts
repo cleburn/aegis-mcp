@@ -54,15 +54,20 @@ export class EnforcementEngine {
       };
     }
 
-    // 2. Governance-level read_only paths
+    // 2. Governance-level read_only paths — but writable overrides read_only.
+    //    A path in both writable and read_only is writable (explicit grant wins).
     const readOnly = this.boundaries.read_only;
+    const writable = this.boundaries.writable;
     if (readOnly && this.matchesAny(relPath, readOnly)) {
-      return {
-        allowed: false,
-        reason: `Path "${relPath}" is read-only per governance policy.`,
-        policy_ref: 'governance.json > permissions > boundaries > read_only',
-        immutable: false,
-      };
+      // If the path is also in the writable list, writable wins
+      if (!writable || !this.matchesAny(relPath, writable)) {
+        return {
+          allowed: false,
+          reason: `Path "${relPath}" is read-only per governance policy.`,
+          policy_ref: 'governance.json > permissions > boundaries > read_only',
+          immutable: false,
+        };
+      }
     }
 
     // 3. Role excluded paths
@@ -93,7 +98,6 @@ export class EnforcementEngine {
     }
 
     // 5. Governance-level writable whitelist (if defined, path must match)
-    const writable = this.boundaries.writable;
     if (writable && writable.length > 0 && !this.matchesAny(relPath, writable)) {
       return {
         allowed: false,
