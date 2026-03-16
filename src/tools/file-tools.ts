@@ -5,6 +5,14 @@
  * Every call is validated against the loaded policy before execution.
  * The agent never sees the policy — only the verdict.
  *
+ * ENFORCEMENT DIRECTIVE: Every tool description includes a clear statement
+ * that agents must use these tools exclusively — no native file operations.
+ * This directive reaches the agent at connection time via the MCP tool list,
+ * before any conversation begins.
+ *
+ * LOGGING: Every denied action is logged to overrides.jsonl by the server
+ * process — no agent involvement required.
+ *
  * Tools:
  *   aegis_check_permissions  — Pre-check before writing (saves wasted generation)
  *   aegis_write_file         — Governed write with path + content validation
@@ -23,6 +31,12 @@ import { z } from 'zod';
 import type { EnforcementEngine } from '../services/enforcement-engine.js';
 import type { PolicyState, ResolvedRole } from '../types.js';
 
+// ─── Enforcement Directive ──────────────────────────────────────────────────
+// This prefix is prepended to every tool description. It reaches the agent
+// at MCP connection time as part of the tool list — before any user prompt.
+
+const ENFORCEMENT_DIRECTIVE = `IMPORTANT: You are connected to the Aegis MCP enforcement layer. ALL file read, write, and delete operations MUST use the aegis_* tools. Do NOT use native file tools (Read, Write, Edit, etc.). Aegis validates every action against your role's governance policy. Blocked actions are logged automatically.\n\n`;
+
 export function registerTools(
   server: McpServer,
   getEngine: () => EnforcementEngine,
@@ -36,7 +50,7 @@ export function registerTools(
     'aegis_check_permissions',
     {
       title: 'Check Permissions',
-      description: `Check if an operation is allowed on a path before attempting it. Use this to pre-validate before writing or reading files — saves you from composing content that would be blocked.
+      description: `${ENFORCEMENT_DIRECTIVE}Check if an operation is allowed on a path before attempting it. Use this to pre-validate before writing or reading files — saves you from composing content that would be blocked. Denied checks are logged automatically by the server.
 
 Args:
   - path (string): Target file path relative to project root
@@ -57,9 +71,15 @@ Returns:
     },
     async ({ path, operation }) => {
       const engine = getEngine();
+      const role = getRole();
       const verdict = operation === 'read'
         ? engine.validateRead(path)
         : engine.validateWrite(path);
+
+      // Log denied permission checks
+      if (!verdict.allowed) {
+        await logBlocked(engine, role, path, `check_permissions (${operation})`, verdict.reason);
+      }
 
       return {
         content: [{
@@ -80,7 +100,7 @@ Returns:
     'aegis_write_file',
     {
       title: 'Write File (Governed)',
-      description: `Write content to a file with governance enforcement. Path is validated against your role's permissions and governance boundaries. Content is scanned for sensitive patterns. If the write violates policy, it is blocked and you receive the specific reason.
+      description: `${ENFORCEMENT_DIRECTIVE}Write content to a file with governance enforcement. Path is validated against your role's permissions and governance boundaries. Content is scanned for sensitive patterns. If the write violates policy, it is blocked, logged, and you receive the specific reason.
 
 Args:
   - path (string): File path relative to project root
@@ -138,7 +158,7 @@ Returns:
     'aegis_read_file',
     {
       title: 'Read File (Governed)',
-      description: `Read the contents of a file with governance enforcement. Path is validated against your role's read permissions. If the read violates policy, it is blocked.
+      description: `${ENFORCEMENT_DIRECTIVE}Read the contents of a file with governance enforcement. Path is validated against your role's read permissions. If the read violates policy, it is blocked, logged, and you receive the specific reason.
 
 Args:
   - path (string): File path relative to project root
@@ -158,9 +178,11 @@ Returns:
     async ({ path }) => {
       const engine = getEngine();
       const state = getState();
+      const role = getRole();
 
       const verdict = engine.validateRead(path);
       if (!verdict.allowed) {
+        await logBlocked(engine, role, path, 'read', verdict.reason);
         return blocked(verdict.reason);
       }
 
@@ -182,7 +204,7 @@ Returns:
     'aegis_delete_file',
     {
       title: 'Delete File (Governed)',
-      description: `Delete a file with governance enforcement. Write permissions are required. If the delete violates policy, it is blocked.
+      description: `${ENFORCEMENT_DIRECTIVE}Delete a file with governance enforcement. Write permissions are required. If the delete violates policy, it is blocked, logged, and you receive the specific reason.
 
 Args:
   - path (string): File path relative to project root
@@ -228,7 +250,7 @@ Returns:
     'aegis_execute',
     {
       title: 'Execute Command (Governed)',
-      description: `Execute a shell command in the project directory. Currently validates that the command runs within the project root. Future versions will enforce command-level permissions.
+      description: `${ENFORCEMENT_DIRECTIVE}Execute a shell command in the project directory. Currently validates that the command runs within the project root. Future versions will enforce command-level permissions.
 
 Args:
   - command (string): Shell command to execute
@@ -287,7 +309,7 @@ Returns:
     'aegis_complete_task',
     {
       title: 'Complete Task',
-      description: `Signal task completion and run required quality gates. Maps the governance quality_gate.pre_commit flags to build_commands and runs each required check. Returns pass/fail with details.
+      description: `${ENFORCEMENT_DIRECTIVE}Signal task completion and run required quality gates. Maps the governance quality_gate.pre_commit flags to build_commands and runs each required check. Returns pass/fail with details.
 
 Args:
   - task_id (string): Identifier for the task being completed
@@ -368,10 +390,10 @@ Returns:
     'aegis_policy_summary',
     {
       title: 'Policy Summary',
-      description: `Get a minimal summary of your current role and permissions. Returns your role name, writable paths, excluded paths, forbidden actions, and key governance rules — just enough to understand your boundaries without loading full policy files.
+      description: `${ENFORCEMENT_DIRECTIVE}Get a minimal summary of your current role and permissions. Call this FIRST before doing any work. Returns your role name, writable paths, excluded paths, forbidden actions, and key governance rules — just enough to understand your boundaries without loading full policy files.
 
 Returns:
-  { "role": "...", "writable_paths": [...], "forbidden_actions": [...], ... }`,
+  { "enforcement_directive": "...", "role": "...", "writable_paths": [...], "forbidden_actions": [...], ... }`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -386,6 +408,7 @@ Returns:
       const protocol = state.governance.override_protocol;
 
       const summary = {
+        enforcement_directive: 'You are governed by the Aegis MCP enforcement layer. ALL file operations (read, write, delete) MUST use aegis_* tools. Do NOT use native file tools. Violations are blocked and logged automatically. There are no exceptions to this requirement.',
         role: role.id,
         role_name: role.name,
         purpose: role.purpose,
