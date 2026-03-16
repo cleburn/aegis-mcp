@@ -5,10 +5,11 @@
  * Every call is validated against the loaded policy before execution.
  * The agent never sees the policy — only the verdict.
  *
- * ENFORCEMENT DIRECTIVE: Every tool description includes a clear statement
- * that agents must use these tools exclusively — no native file operations.
- * This directive reaches the agent at connection time via the MCP tool list,
- * before any conversation begins.
+ * GOVERNANCE MODEL: The Aegis MCP does not override the agent's native
+ * directives. It introduces itself, explains why governance is active,
+ * identifies which operations benefit from compliance validation, and
+ * asks the agent to seek user permission to route governed operations
+ * through Aegis tools. The user's authority is the enforcement mechanism.
  *
  * LOGGING: Every denied action is logged to overrides.jsonl by the server
  * process — no agent involvement required.
@@ -31,11 +32,18 @@ import { z } from 'zod';
 import type { EnforcementEngine } from '../services/enforcement-engine.js';
 import type { PolicyState, ResolvedRole } from '../types.js';
 
-// ─── Enforcement Directive ──────────────────────────────────────────────────
+// ─── Governance Introduction ────────────────────────────────────────────────
 // This prefix is prepended to every tool description. It reaches the agent
 // at MCP connection time as part of the tool list — before any user prompt.
+//
+// It does NOT attempt to override the agent's native directives. Instead it:
+// 1. Introduces the governance context
+// 2. Explains which operations benefit from compliance validation
+// 3. Asks the agent to inform the user and request permission
+//
+// The user's authority is what binds the agent, not the MCP's.
 
-const ENFORCEMENT_DIRECTIVE = `IMPORTANT: You are connected to the Aegis MCP enforcement layer. ALL file read, write, and delete operations MUST use the aegis_* tools. Do NOT use native file tools (Read, Write, Edit, etc.). Aegis validates every action against your role's governance policy. Blocked actions are logged automatically.\n\n`;
+const GOVERNANCE_INTRO = `NOTE: You are connected to the Aegis MCP, a governance enforcement layer installed by the project owner to maintain compliance in this workspace. This project operates under regulated governance policy (.agentpolicy/). Your native tools for reading files, searching, and exploring the codebase work fine and do not need governance gating. However, all WRITE, DELETE, and EXECUTE operations in this project should be routed through Aegis tools (aegis_write_file, aegis_delete_file, aegis_execute) to ensure compliance validation, sensitive pattern scanning, and audit trail logging. Before beginning work, please call aegis_policy_summary to understand your role boundaries, then inform the user that Aegis governance is active and ask for their confirmation to route write operations through Aegis tools. If the user declines, proceed with native tools but note that governance validation will not be applied.\n\n`;
 
 export function registerTools(
   server: McpServer,
@@ -50,7 +58,7 @@ export function registerTools(
     'aegis_check_permissions',
     {
       title: 'Check Permissions',
-      description: `${ENFORCEMENT_DIRECTIVE}Check if an operation is allowed on a path before attempting it. Use this to pre-validate before writing or reading files — saves you from composing content that would be blocked. Denied checks are logged automatically by the server.
+      description: `${GOVERNANCE_INTRO}Check if an operation is allowed on a path before attempting it. Use this to pre-validate before writing or reading files — saves you from composing content that would be blocked. Denied checks are logged automatically by the server.
 
 Args:
   - path (string): Target file path relative to project root
@@ -100,7 +108,7 @@ Returns:
     'aegis_write_file',
     {
       title: 'Write File (Governed)',
-      description: `${ENFORCEMENT_DIRECTIVE}Write content to a file with governance enforcement. Path is validated against your role's permissions and governance boundaries. Content is scanned for sensitive patterns. If the write violates policy, it is blocked, logged, and you receive the specific reason.
+      description: `${GOVERNANCE_INTRO}Write content to a file with governance enforcement. Path is validated against your role's permissions and governance boundaries. Content is scanned for sensitive patterns. If the write violates policy, it is blocked, logged, and you receive the specific reason.
 
 Args:
   - path (string): File path relative to project root
@@ -158,7 +166,7 @@ Returns:
     'aegis_read_file',
     {
       title: 'Read File (Governed)',
-      description: `${ENFORCEMENT_DIRECTIVE}Read the contents of a file with governance enforcement. Path is validated against your role's read permissions. If the read violates policy, it is blocked, logged, and you receive the specific reason.
+      description: `${GOVERNANCE_INTRO}Read the contents of a file with governance enforcement. Path is validated against your role's read permissions. If the read violates policy, it is blocked, logged, and you receive the specific reason. Note: Native read tools are acceptable for general file exploration. Use this governed version when reading files that may contain sensitive or regulated data.
 
 Args:
   - path (string): File path relative to project root
@@ -204,7 +212,7 @@ Returns:
     'aegis_delete_file',
     {
       title: 'Delete File (Governed)',
-      description: `${ENFORCEMENT_DIRECTIVE}Delete a file with governance enforcement. Write permissions are required. If the delete violates policy, it is blocked, logged, and you receive the specific reason.
+      description: `${GOVERNANCE_INTRO}Delete a file with governance enforcement. Write permissions are required. If the delete violates policy, it is blocked, logged, and you receive the specific reason.
 
 Args:
   - path (string): File path relative to project root
@@ -250,7 +258,7 @@ Returns:
     'aegis_execute',
     {
       title: 'Execute Command (Governed)',
-      description: `${ENFORCEMENT_DIRECTIVE}Execute a shell command in the project directory. Currently validates that the command runs within the project root. Future versions will enforce command-level permissions.
+      description: `${GOVERNANCE_INTRO}Execute a shell command in the project directory with governance oversight. Use this instead of native command execution to ensure compliance logging. Currently validates that the command runs within the project root. Future versions will enforce command-level permissions.
 
 Args:
   - command (string): Shell command to execute
@@ -309,7 +317,7 @@ Returns:
     'aegis_complete_task',
     {
       title: 'Complete Task',
-      description: `${ENFORCEMENT_DIRECTIVE}Signal task completion and run required quality gates. Maps the governance quality_gate.pre_commit flags to build_commands and runs each required check. Returns pass/fail with details.
+      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates. Maps the governance quality_gate.pre_commit flags to build_commands and runs each required check. Returns pass/fail with details.
 
 Args:
   - task_id (string): Identifier for the task being completed
@@ -390,10 +398,10 @@ Returns:
     'aegis_policy_summary',
     {
       title: 'Policy Summary',
-      description: `${ENFORCEMENT_DIRECTIVE}Get a minimal summary of your current role and permissions. Call this FIRST before doing any work. Returns your role name, writable paths, excluded paths, forbidden actions, and key governance rules — just enough to understand your boundaries without loading full policy files.
+      description: `${GOVERNANCE_INTRO}Get a minimal summary of your current role and permissions. Call this FIRST before doing any work. Returns your role boundaries, forbidden actions, and governance rules. After reviewing, inform the user that Aegis governance is active in this project and ask for their confirmation to route write, delete, and execute operations through Aegis tools for compliance validation.
 
 Returns:
-  { "enforcement_directive": "...", "role": "...", "writable_paths": [...], "forbidden_actions": [...], ... }`,
+  { "governance_notice": "...", "role": "...", "writable_paths": [...], "forbidden_actions": [...], ... }`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -408,7 +416,7 @@ Returns:
       const protocol = state.governance.override_protocol;
 
       const summary = {
-        enforcement_directive: 'You are governed by the Aegis MCP enforcement layer. ALL file operations (read, write, delete) MUST use aegis_* tools. Do NOT use native file tools. Violations are blocked and logged automatically. There are no exceptions to this requirement.',
+        governance_notice: 'This project is governed by Aegis (.agentpolicy/). The project owner has installed the Aegis MCP to enforce compliance at runtime. Please inform the user that Aegis governance is active, then ask for their permission to route write, delete, and execute operations through Aegis tools. If the user declines, you may proceed with native tools, but note that compliance validation and audit logging will not be applied. Native read and search tools are fine for exploration.',
         role: role.id,
         role_name: role.name,
         purpose: role.purpose,
