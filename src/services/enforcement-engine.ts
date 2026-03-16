@@ -7,8 +7,16 @@
  * Two-layer enforcement:
  * Layer 1 (skeleton): permissions.boundaries, scope paths, override_protocol
  * Layer 2 (extensions): sensitive_patterns, cross_domain_rules, sensitivity_tiers
+ *
+ * Override protocol:
+ * When the governance behavior is "warn_confirm_and_log", blocked actions return
+ * an override_token. The agent surfaces the violation to the human, and if the
+ * human confirms, the agent calls aegis_request_override with the token. The
+ * override is single-use, time-limited (60s), and logged with human_confirmed: true.
+ * Immutable policies cannot be overridden regardless.
  */
 
+import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join, relative, isAbsolute } from 'node:path';
 import { minimatch } from 'minimatch';
@@ -20,7 +28,23 @@ import type {
   PermissionBoundaries,
 } from '../types.js';
 
+// ─── Override Token Types ───────────────────────────────────────────────────
+
+interface PendingOverride {
+  token: string;
+  operation: 'write' | 'read' | 'delete';
+  path: string;
+  content?: string;
+  reason: string;
+  policy_ref: string;
+  created_at: number;
+}
+
+const OVERRIDE_TTL_MS = 60_000; // 60 seconds
+
 export class EnforcementEngine {
+  private pendingOverrides = new Map<string, PendingOverride>();
+
   constructor(
     private state: PolicyState,
     private activeRole: ResolvedRole
@@ -59,7 +83,6 @@ export class EnforcementEngine {
     const readOnly = this.boundaries.read_only;
     const writable = this.boundaries.writable;
     if (readOnly && this.matchesAny(relPath, readOnly)) {
-      // If the path is also in the writable list, writable wins
       if (!writable || !this.matchesAny(relPath, writable)) {
         return {
           allowed: false,
@@ -158,7 +181,6 @@ export class EnforcementEngine {
 
   /**
    * Scan proposed file content for sensitive patterns.
-   * Uses governance.permissions.sensitive_patterns when present.
    */
   scanContent(content: string, targetPath: string): EnforcementVerdict {
     const patterns = this.state.governance.permissions?.sensitive_patterns;
@@ -185,7 +207,6 @@ export class EnforcementEngine {
 
   /**
    * Validate that a cross-domain import respects boundaries.
-   * Uses governance.cross_domain_rules when present (extension field).
    */
   validateCrossDomain(sourcePath: string, importPath: string): EnforcementVerdict {
     const rules = this.state.governance.cross_domain_rules;
@@ -197,12 +218,10 @@ export class EnforcementEngine {
     const sourceDomain = this.getDomain(sourcePath, domains);
     const importDomain = this.getDomain(importPath, domains);
 
-    // Same domain or can't determine — allow
     if (!sourceDomain || !importDomain || sourceDomain === importDomain) {
       return { allowed: true };
     }
 
-    // Cross-domain — must go through shared interfaces
     if (!importPath.includes(rules.shared_interfaces_path)) {
       return {
         allowed: false,
@@ -237,6 +256,62 @@ export class EnforcementEngine {
   }
 
   /**
+   * Create a pending override token for a blocked action.
+   * The token is single-use and expires after 60 seconds.
+   * Returns null if the policy is immutable or override behavior is block_and_log.
+   */
+  createOverrideToken(
+    operation: 'write' | 'read' | 'delete',
+    path: string,
+    reason: string,
+    policyRef: string,
+    content?: string
+  ): string | null {
+    const { behavior, isImmutable } = this.getOverrideBehavior(policyRef);
+
+    // Immutable policies and block_and_log cannot be overridden
+    if (isImmutable || behavior === 'block_and_log') {
+      return null;
+    }
+
+    // Clean up expired tokens
+    this.cleanExpiredTokens();
+
+    const token = randomBytes(16).toString('hex');
+    this.pendingOverrides.set(token, {
+      token,
+      operation,
+      path,
+      content,
+      reason,
+      policy_ref: policyRef,
+      created_at: Date.now(),
+    });
+
+    return token;
+  }
+
+  /**
+   * Validate and consume an override token.
+   * Returns the pending override if the token is valid and not expired.
+   * The token is consumed (deleted) after use — single-use only.
+   */
+  consumeOverrideToken(token: string): PendingOverride | null {
+    const pending = this.pendingOverrides.get(token);
+    if (!pending) return null;
+
+    // Check expiration
+    if (Date.now() - pending.created_at > OVERRIDE_TTL_MS) {
+      this.pendingOverrides.delete(token);
+      return null;
+    }
+
+    // Consume — single use
+    this.pendingOverrides.delete(token);
+    return pending;
+  }
+
+  /**
    * Log an override to the append-only overrides.jsonl file.
    */
   async logOverride(entry: OverrideLogEntry): Promise<void> {
@@ -250,7 +325,6 @@ export class EnforcementEngine {
 
   /**
    * Build the list of commands to run for quality gate validation.
-   * Maps pre_commit booleans to build_commands from constitution or governance.
    */
   getQualityGateCommands(): Array<{ name: string; command: string }> {
     const gates = this.state.governance.quality_gate?.pre_commit;
@@ -272,7 +346,6 @@ export class EnforcementEngine {
       result.push({ name: 'typecheck', command: commands.typecheck });
     }
 
-    // Custom checks from quality gate
     if (gates.custom_checks) {
       for (const check of gates.custom_checks) {
         result.push({ name: check.name, command: check.command });
@@ -286,15 +359,22 @@ export class EnforcementEngine {
 
   /**
    * Safely access permissions.boundaries — returns empty object if missing.
-   * Handles governance files that don't have the skeleton boundaries field.
    */
   private get boundaries(): PermissionBoundaries {
     return this.state.governance.permissions?.boundaries ?? {};
   }
 
+  private cleanExpiredTokens(): void {
+    const now = Date.now();
+    for (const [token, pending] of this.pendingOverrides) {
+      if (now - pending.created_at > OVERRIDE_TTL_MS) {
+        this.pendingOverrides.delete(token);
+      }
+    }
+  }
+
   private matchesAny(path: string, patterns: string[]): boolean {
     return patterns.some((pattern) => {
-      // Normalize: "compliance/" should match "compliance/src/index.ts"
       const normalized = pattern.endsWith('/')
         ? pattern + '**'
         : pattern;
