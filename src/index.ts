@@ -41,6 +41,43 @@ const __dirname = dirname(__filename);
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
 const VERSION: string = pkg.version;
 
+// ─── Update Checker ─────────────────────────────────────────────────────────
+// Non-blocking check against the npm registry. If a newer version
+// exists, prints a one-line notice to stderr. If the check fails
+// (offline, timeout, etc.), skips silently — never blocks startup.
+
+async function checkForUpdate(): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+
+    const res = await fetch(
+      `https://registry.npmjs.org/${pkg.name}/latest`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+
+    if (!res.ok) return;
+
+    const data = await res.json() as { version?: string };
+    const latest = data.version;
+    if (!latest || latest === VERSION) return;
+
+    const current = VERSION.split('.').map(Number);
+    const remote = latest.split('.').map(Number);
+    const isNewer =
+      remote[0] > current[0] ||
+      (remote[0] === current[0] && remote[1] > current[1]) ||
+      (remote[0] === current[0] && remote[1] === current[1] && remote[2] > current[2]);
+
+    if (isNewer) {
+      log(`Update available: ${VERSION} → ${latest}. Run: npm install -g ${pkg.name}@latest`);
+    }
+  } catch {
+    // Silently skip — network issues should never block the MCP server
+  }
+}
+
 // ─── Parse CLI Args ─────────────────────────────────────────────────────────
 
 function parseArgs(): AegisMcpConfig {
@@ -117,6 +154,9 @@ TOOLS PROVIDED:
 
 async function main(): Promise<void> {
   const config = parseArgs();
+
+  // Check for updates (non-blocking, 3s timeout)
+  await checkForUpdate();
 
   log(`Starting aegis-mcp-server v${VERSION}`);
   log(`  Project: ${config.projectRoot}`);
