@@ -40,7 +40,7 @@ interface PendingOverride {
   created_at: number;
 }
 
-const OVERRIDE_TTL_MS = 60_000; // 60 seconds
+const OVERRIDE_TTL_MS = 300_000; // 5 minutes
 
 export class EnforcementEngine {
   private pendingOverrides = new Map<string, PendingOverride>();

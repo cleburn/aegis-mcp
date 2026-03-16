@@ -12,7 +12,7 @@
  * includes an override_token. The agent presents the violation to the
  * human. If the human confirms, the agent calls aegis_request_override
  * with the token. The action proceeds and is logged with human_confirmed: true.
- * The token is single-use and expires after 60 seconds.
+ * The token is single-use and expires after 5 minutes.
  * Immutable policies cannot be overridden.
  *
  * LOGGING: Every denied action is logged to overrides.jsonl by the server
@@ -99,7 +99,7 @@ Returns:
               reason: verdict.reason,
               override_available: token !== null,
               override_token: token,
-              ...(token ? { instructions: 'To override: present the violated policy to the user. If the user explicitly confirms the override, call aegis_request_override with this token. The token expires in 60 seconds and is single-use.' } : { instructions: 'This policy is immutable and cannot be overridden. The user must modify the governance through aegis init.' }),
+              ...(token ? { instructions: 'To override: present the violated policy to the user. If the user explicitly confirms the override, call aegis_request_override with this token. The token expires in 5 minutes and is single-use.' } : { instructions: 'This policy is immutable and cannot be overridden. The user must modify the governance through aegis init.' }),
             }),
           }],
         };
@@ -274,7 +274,7 @@ Returns:
     'aegis_request_override',
     {
       title: 'Request Override',
-      description: `${GOVERNANCE_INTRO}Execute a previously blocked action using an override token. Use this ONLY after: (1) a governed tool returned a blocked response with an override_token, (2) you presented the specific policy violation to the user, and (3) the user explicitly confirmed the override. The token is single-use and expires after 60 seconds. The override is logged with human_confirmed: true. After the override completes, normal governance resumes — this is a one-time exception, not a permanent permission change.
+      description: `${GOVERNANCE_INTRO}Execute a previously blocked action using an override token. Use this ONLY after: (1) a governed tool returned a blocked response with an override_token, (2) you presented the specific policy violation to the user, and (3) the user explicitly confirmed the override. The token is single-use and expires after 5 minutes. The override is logged with human_confirmed: true. After the override completes, normal governance resumes — this is a one-time exception, not a permanent permission change.
 
 Args:
   - override_token (string): The token from the blocked response
@@ -308,7 +308,7 @@ Returns:
             type: 'text' as const,
             text: JSON.stringify({
               status: 'override_failed',
-              reason: 'Invalid or expired override token. Tokens are single-use and expire after 60 seconds. Request a new one by attempting the operation again.',
+              reason: 'Invalid or expired override token. Tokens are single-use and expire after 5 minutes. Request a new one by attempting the operation again.',
             }),
           }],
         };
@@ -611,7 +611,7 @@ function blockedWithOverride(
         override_available: token !== null,
         override_token: token,
         ...(token
-          ? { instructions: 'To override: present the violated policy to the user. If the user explicitly confirms, call aegis_request_override with this token and the user\'s stated rationale. The token expires in 60 seconds and is single-use. After the override, normal governance resumes.' }
+          ? { instructions: 'To override: present the violated policy to the user. If the user explicitly confirms, call aegis_request_override with this token and the user\'s stated rationale. The token expires in 5 minutes and is single-use. After the override, normal governance resumes.' }
           : { instructions: 'This policy is immutable and cannot be overridden. The user must modify the governance through aegis init.' }
         ),
       }),
