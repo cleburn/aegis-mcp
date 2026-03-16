@@ -1,6 +1,6 @@
 {
   "name": "aegis-mcp-server",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "MCP enforcement layer for the Aegis agent governance specification",
   "type": "module",
   "bin": {
