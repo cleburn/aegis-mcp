@@ -6,22 +6,15 @@
  * Starts the MCP enforcement server. Loads .agentpolicy/ into process memory,
  * registers governed tools, and connects via stdio transport.
  *
- * The agent connects to this server and calls governed tools (aegis_write_file,
- * aegis_read_file, etc.) instead of raw file system operations. All validation
- * happens in this process at zero token cost to the agent.
+ * Universal mode (default): No --role flag. The agent calls aegis_policy_summary
+ * on connection, sees available roles, presents them to the user, and the user
+ * selects a role. The MCP locks to that role for the session.
+ *
+ * Fixed mode: --role <id> locks to a specific role at startup.
  *
  * Usage:
+ *   aegis-mcp --project /path/to/project
  *   aegis-mcp --project /path/to/project --role backend
- *
- * Claude Code MCP config:
- *   {
- *     "mcpServers": {
- *       "aegis": {
- *         "command": "npx",
- *         "args": ["aegis-mcp-server", "--project", ".", "--role", "default"]
- *       }
- *     }
- *   }
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -42,9 +35,6 @@ const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-
 const VERSION: string = pkg.version;
 
 // ─── Update Checker ─────────────────────────────────────────────────────────
-// Non-blocking check against the npm registry. If a newer version
-// exists, prints a one-line notice to stderr. If the check fails
-// (offline, timeout, etc.), skips silently — never blocks startup.
 
 async function checkForUpdate(): Promise<void> {
   try {
@@ -74,7 +64,7 @@ async function checkForUpdate(): Promise<void> {
       log(`Update available: ${VERSION} → ${latest}. Run: npm install -g ${pkg.name}@latest`);
     }
   } catch {
-    // Silently skip — network issues should never block the MCP server
+    // Silently skip
   }
 }
 
@@ -83,7 +73,7 @@ async function checkForUpdate(): Promise<void> {
 function parseArgs(): AegisMcpConfig {
   const args = process.argv.slice(2);
   let projectRoot = process.cwd();
-  let role = 'default';
+  let role = 'auto'; // Universal mode by default
   let policyDir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -94,7 +84,7 @@ function parseArgs(): AegisMcpConfig {
         break;
       case '--role':
       case '-r':
-        role = args[++i] ?? 'default';
+        role = args[++i] ?? 'auto';
         break;
       case '--policy-dir':
         policyDir = args[++i];
@@ -124,20 +114,22 @@ USAGE:
 
 OPTIONS:
   -p, --project <path>     Project root directory (default: cwd)
-  -r, --role <role-id>     Agent role to enforce (default: "default")
+  -r, --role <role-id>     Agent role to enforce (default: "auto" — agent selects at runtime)
       --policy-dir <dir>   Policy directory name (default: ".agentpolicy")
   -h, --help               Show this help
   -v, --version            Show version
 
-CLAUDE CODE CONFIG:
-  {
-    "mcpServers": {
-      "aegis": {
-        "command": "npx",
-        "args": ["aegis-mcp-server", "--project", ".", "--role", "default"]
-      }
-    }
-  }
+UNIVERSAL MODE (default):
+  aegis-mcp --project .
+
+  No --role flag. The agent calls aegis_policy_summary, sees available roles,
+  presents them to the user, and the user selects. The MCP locks to that role
+  for the session.
+
+FIXED MODE:
+  aegis-mcp --project . --role backend
+
+  Locks to a specific role at startup.
 
 TOOLS PROVIDED:
   aegis_check_permissions   Pre-check if an operation is allowed
@@ -146,7 +138,9 @@ TOOLS PROVIDED:
   aegis_delete_file         Governed file delete
   aegis_execute             Governed command execution
   aegis_complete_task       Task completion with quality gate validation
-  aegis_policy_summary      Minimal summary of current role and permissions
+  aegis_policy_summary      Role boundaries and governance summary
+  aegis_select_role         Select a role (universal mode only)
+  aegis_request_override    Execute a blocked action with human confirmation
 `);
 }
 
@@ -155,12 +149,11 @@ TOOLS PROVIDED:
 async function main(): Promise<void> {
   const config = parseArgs();
 
-  // Check for updates (non-blocking, 3s timeout)
   await checkForUpdate();
 
   log(`Starting aegis-mcp-server v${VERSION}`);
   log(`  Project: ${config.projectRoot}`);
-  log(`  Role: ${config.role}`);
+  log(`  Role: ${config.role === 'auto' ? 'auto (agent selects at runtime)' : config.role}`);
   log(`  Policy dir: ${config.policyDir ?? '.agentpolicy'}`);
 
   // 1. Load policy into process memory
@@ -183,12 +176,19 @@ async function main(): Promise<void> {
     version: VERSION,
   });
 
-  // 4. Register governed tools
+  // 4. Register governed tools — pass loader for role selection support
   registerTools(
     server,
     () => engine,
     () => state,
-    () => activeRole
+    () => activeRole,
+    loader,
+    (role) => {
+      // Callback when role is selected in auto mode
+      activeRole = role;
+      engine.updateState(state, role);
+      log(`Role locked: ${role.id}`);
+    }
   );
 
   // 5. Connect via stdio transport
@@ -197,7 +197,6 @@ async function main(): Promise<void> {
 
   log('Connected via stdio — enforcement active');
 
-  // Graceful shutdown
   const shutdown = async (): Promise<void> => {
     log('Shutting down...');
     await loader.stopWatching();

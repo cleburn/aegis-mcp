@@ -1,32 +1,19 @@
 /**
  * Governed File Tools — MCP tool registrations for file operations.
  *
- * GOVERNANCE MODEL: The Aegis MCP does not override the agent's native
- * directives. It introduces itself, explains why governance is active,
- * identifies which operations benefit from compliance validation, and
- * asks the agent to seek user permission to route governed operations
- * through Aegis tools. The user's authority is the enforcement mechanism.
+ * GOVERNANCE MODEL: Consent-based. The MCP introduces itself, explains
+ * governance, and asks the agent to seek user permission.
  *
- * OVERRIDE HANDSHAKE: When a write/delete is blocked and the override
- * protocol allows overrides (warn_confirm_and_log), the blocked response
- * includes an override_token. The agent presents the violation to the
- * human. If the human confirms, the agent calls aegis_request_override
- * with the token. The action proceeds and is logged with human_confirmed: true.
- * The token is single-use and expires after 5 minutes.
- * Immutable policies cannot be overridden.
+ * ROLE SELECTION: In universal/auto mode, aegis_policy_summary returns
+ * available roles. The agent presents them to the user, who picks one.
+ * The agent calls aegis_select_role to lock in. All enforcement uses
+ * the selected role thereafter.
  *
- * LOGGING: Every denied action is logged to overrides.jsonl by the server
- * process — no agent involvement required.
+ * OVERRIDE HANDSHAKE: Blocked actions return override tokens when policy
+ * allows. Human confirms → agent calls aegis_request_override → action
+ * proceeds and is logged with human_confirmed: true. Single-use, 5-min TTL.
  *
- * Tools:
- *   aegis_check_permissions   — Pre-check before writing
- *   aegis_write_file          — Governed write with path + content validation
- *   aegis_read_file           — Governed read with path validation
- *   aegis_delete_file         — Governed delete (uses write permissions)
- *   aegis_execute             — Governed command execution
- *   aegis_complete_task       — Task completion with quality gate validation
- *   aegis_policy_summary      — Minimal role/permissions summary
- *   aegis_request_override    — Consume an override token after human confirmation
+ * LOGGING: Every denied action is logged automatically by the server.
  */
 
 import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
@@ -35,6 +22,7 @@ import { execSync } from 'node:child_process';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { EnforcementEngine } from '../services/enforcement-engine.js';
+import type { PolicyLoader } from '../services/policy-loader.js';
 import type { PolicyState, ResolvedRole } from '../types.js';
 
 // ─── Governance Introduction ────────────────────────────────────────────────
@@ -45,8 +33,83 @@ export function registerTools(
   server: McpServer,
   getEngine: () => EnforcementEngine,
   getState: () => PolicyState,
-  getRole: () => ResolvedRole
+  getRole: () => ResolvedRole,
+  loader: PolicyLoader,
+  onRoleSelected: (role: ResolvedRole) => void
 ): void {
+
+  // ─── aegis_select_role ────────────────────────────────────────────────────
+
+  server.registerTool(
+    'aegis_select_role',
+    {
+      title: 'Select Role',
+      description: `${GOVERNANCE_INTRO}Select a role for this session. Call this after aegis_policy_summary shows available roles and the user has chosen one. The MCP locks to the selected role for the remainder of the session — all enforcement uses this role's boundaries. This is a one-time selection per session.
+
+Args:
+  - role_id (string): The role ID to select (e.g., "backend", "frontend", "qa")
+
+Returns:
+  { "status": "role_selected", "role": "...", ... } or { "status": "error", "reason": "..." }`,
+      inputSchema: {
+        role_id: z.string().describe('The role ID to select from the available roles'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ role_id }) => {
+      if (!loader.isAutoMode()) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'error',
+              reason: `Role is already fixed to "${getRole().id}". Role selection is only available in universal mode (no --role flag).`,
+            }),
+          }],
+        };
+      }
+
+      const role = loader.selectRole(role_id);
+      if (!role) {
+        const available = loader.getAvailableRoles().map(r => r.id);
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'error',
+              reason: `Role "${role_id}" not found. Available roles: ${available.join(', ')}`,
+            }),
+          }],
+        };
+      }
+
+      // Notify the main process to update engine references
+      onRoleSelected(role);
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            status: 'role_selected',
+            role: role.id,
+            role_name: role.name,
+            purpose: role.purpose,
+            writable_paths: role.writable_paths,
+            readable_paths: role.readable_paths,
+            forbidden_actions: role.forbidden_actions,
+            message: `Role "${role.id}" is now active. All enforcement uses this role's boundaries for the remainder of this session.`,
+          }),
+        }],
+      };
+    }
+  );
 
   // ─── aegis_check_permissions ──────────────────────────────────────────────
 
@@ -83,7 +146,6 @@ Returns:
       if (!verdict.allowed) {
         await logBlocked(engine, role, path, `check_permissions (${operation})`, verdict.reason);
 
-        // Generate override token if policy allows overrides
         const token = engine.createOverrideToken(
           operation === 'delete' ? 'delete' : operation as 'read' | 'write',
           path,
@@ -99,7 +161,10 @@ Returns:
               reason: verdict.reason,
               override_available: token !== null,
               override_token: token,
-              ...(token ? { instructions: 'To override: present the violated policy to the user. If the user explicitly confirms the override, call aegis_request_override with this token. The token expires in 5 minutes and is single-use.' } : { instructions: 'This policy is immutable and cannot be overridden. The user must modify the governance through aegis init.' }),
+              ...(token
+                ? { instructions: 'To override: present the violated policy to the user. If the user explicitly confirms the override, call aegis_request_override with this token. The token expires in 5 minutes and is single-use.' }
+                : { instructions: 'This policy is immutable and cannot be overridden. The user must modify the governance through aegis init.' }
+              ),
             }),
           }],
         };
@@ -144,7 +209,6 @@ Returns:
       const state = getState();
       const role = getRole();
 
-      // Validate path permissions
       const pathVerdict = engine.validateWrite(path);
       if (!pathVerdict.allowed) {
         await logBlocked(engine, role, path, 'write', pathVerdict.reason);
@@ -152,7 +216,6 @@ Returns:
         return blockedWithOverride(pathVerdict.reason, token);
       }
 
-      // Scan content for sensitive patterns
       const contentVerdict = engine.scanContent(content, path);
       if (!contentVerdict.allowed) {
         await logBlocked(engine, role, path, 'write (sensitive content)', contentVerdict.reason);
@@ -160,7 +223,6 @@ Returns:
         return blockedWithOverride(contentVerdict.reason, token);
       }
 
-      // Write the file
       const absPath = toAbsolute(path, state.projectRoot);
       await mkdir(dirname(absPath), { recursive: true });
       await writeFile(absPath, content, 'utf-8');
@@ -278,10 +340,10 @@ Returns:
 
 Args:
   - override_token (string): The token from the blocked response
-  - rationale (string): The user's reason for overriding (what they said when confirming)
+  - rationale (string): The user's reason for overriding
 
 Returns:
-  { "status": "override_success", "path": "...", "operation": "..." } or { "status": "override_failed", "reason": "..." }`,
+  { "status": "override_success", ... } or { "status": "override_failed", "reason": "..." }`,
       inputSchema: {
         override_token: z.string().describe('The override token from the blocked response'),
         rationale: z.string().describe("The user's stated reason for overriding the policy"),
@@ -298,7 +360,6 @@ Returns:
       const state = getState();
       const role = getRole();
 
-      // Consume the token — single use
       const pending = engine.consumeOverrideToken(override_token);
 
       if (!pending) {
@@ -314,7 +375,6 @@ Returns:
         };
       }
 
-      // Log the override with human_confirmed: true
       await engine.logOverride({
         timestamp: new Date().toISOString(),
         policy_violated: pending.reason,
@@ -325,7 +385,6 @@ Returns:
         rationale,
       });
 
-      // Execute the overridden action
       const absPath = toAbsolute(pending.path, state.projectRoot);
 
       try {
@@ -338,7 +397,7 @@ Returns:
                   type: 'text' as const,
                   text: JSON.stringify({
                     status: 'override_failed',
-                    reason: 'Write override requires content. Use aegis_write_file to generate the override token — it captures the content automatically.',
+                    reason: 'Write override requires content. Use aegis_write_file to generate the override token.',
                   }),
                 }],
               };
@@ -400,7 +459,7 @@ Returns:
     'aegis_execute',
     {
       title: 'Execute Command (Governed)',
-      description: `${GOVERNANCE_INTRO}Execute a shell command in the project directory with governance oversight. Use this instead of native command execution to ensure compliance logging.
+      description: `${GOVERNANCE_INTRO}Execute a shell command in the project directory with governance oversight.
 
 Args:
   - command (string): Shell command to execute
@@ -459,7 +518,7 @@ Returns:
     'aegis_complete_task',
     {
       title: 'Complete Task',
-      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates. Maps the governance quality_gate.pre_commit flags to build_commands and runs each required check. Returns pass/fail with details.
+      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates.
 
 Args:
   - task_id (string): Identifier for the task being completed
@@ -540,10 +599,11 @@ Returns:
     'aegis_policy_summary',
     {
       title: 'Policy Summary',
-      description: `${GOVERNANCE_INTRO}Get a minimal summary of your current role and permissions. Call this FIRST before doing any work. Returns your role boundaries, forbidden actions, and governance rules. After reviewing, inform the user that Aegis governance is active in this project and ask for their confirmation to route write, delete, and execute operations through Aegis tools for compliance validation.
+      description: `${GOVERNANCE_INTRO}Get your governance summary. In universal mode (no role pre-assigned), this returns the list of available roles — present them to the user and ask which role to use, then call aegis_select_role. In fixed mode (role pre-assigned), this returns your role boundaries and governance rules. Call this FIRST before doing any work.
 
 Returns:
-  { "governance_notice": "...", "role": "...", "writable_paths": [...], "forbidden_actions": [...], ... }`,
+  Universal mode: { "mode": "role_selection_required", "available_roles": [...] }
+  Fixed/selected mode: { "governance_notice": "...", "role": "...", "writable_paths": [...], ... }`,
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -555,6 +615,25 @@ Returns:
     async () => {
       const role = getRole();
       const state = getState();
+
+      // Auto mode with no role selected yet — return available roles
+      if (loader.isAutoMode() && !loader.hasSelectedRole()) {
+        const available = loader.getAvailableRoles();
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              mode: 'role_selection_required',
+              governance_notice: 'This project is governed by Aegis (.agentpolicy/). Before you can perform any work, a role must be selected. Present the available roles to the user and ask which one to use. Then call aegis_select_role with the chosen role ID.',
+              project: state.constitution.project.name,
+              available_roles: available,
+              instructions: 'Present these roles to the user. Ask them to select one. Then call aegis_select_role with the chosen role_id. Do not take any other action until a role is selected.',
+            }),
+          }],
+        };
+      }
+
+      // Role is assigned (fixed mode or selected in auto mode)
       const protocol = state.governance.override_protocol;
 
       const summary = {

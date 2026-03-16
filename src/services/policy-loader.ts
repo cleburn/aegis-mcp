@@ -2,12 +2,11 @@
  * PolicyLoader — Reads .agentpolicy/ files into process memory.
  *
  * Core of the zero-token-overhead design. All governance files are loaded
- * into Node.js process memory on startup. The agent never sees these files —
- * it only sees tool call results (allowed/blocked).
+ * into Node.js process memory on startup. The agent never sees these files.
  *
- * Role resolution merges the skeleton fields (role.name, scope.primary_paths)
- * with extension fields (paths.read/write, forbidden_actions) into a single
- * ResolvedRole for fast enforcement lookups.
+ * Supports "auto" role mode: when config.role is "auto" (or not specified),
+ * no role is locked at startup. The agent selects a role at runtime via
+ * aegis_select_role, and all enforcement uses the selected role thereafter.
  */
 
 import { readFile, readdir, access } from 'node:fs/promises';
@@ -26,6 +25,7 @@ export class PolicyLoader {
   private state: PolicyState | null = null;
   private watcher: ReturnType<typeof watch> | null = null;
   private onReload?: () => void;
+  private selectedRole: ResolvedRole | null = null;
 
   constructor(private config: AegisMcpConfig) {}
 
@@ -100,10 +100,71 @@ export class PolicyLoader {
   }
 
   /**
-   * Get the resolved role for the configured agent, falling back to default.
+   * Whether the MCP is in auto role mode (no role pre-assigned).
+   */
+  isAutoMode(): boolean {
+    return this.config.role === 'auto';
+  }
+
+  /**
+   * Whether a role has been selected in auto mode.
+   */
+  hasSelectedRole(): boolean {
+    return this.selectedRole !== null;
+  }
+
+  /**
+   * Select a role in auto mode. Returns the resolved role, or null if not found.
+   */
+  selectRole(roleId: string): ResolvedRole | null {
+    const state = this.getState();
+    const role = state.roles.get(roleId);
+    if (!role) return null;
+
+    this.selectedRole = role;
+    this.log(`Role selected: ${roleId}`);
+    return role;
+  }
+
+  /**
+   * Get all available roles as a summary list.
+   */
+  getAvailableRoles(): Array<{ id: string; name: string; purpose: string }> {
+    const state = this.getState();
+    const roles: Array<{ id: string; name: string; purpose: string }> = [];
+    for (const [id, role] of state.roles) {
+      roles.push({ id, name: role.name, purpose: role.purpose });
+    }
+    return roles;
+  }
+
+  /**
+   * Get the resolved role for the configured agent.
+   * In auto mode: returns the selected role, or a placeholder if none selected yet.
+   * In fixed mode: returns the configured role, falling back to default.
    */
   getActiveRole(): ResolvedRole {
     const state = this.getState();
+
+    // Auto mode — return selected role or placeholder
+    if (this.isAutoMode()) {
+      if (this.selectedRole) return this.selectedRole;
+
+      // No role selected yet — return a restrictive placeholder
+      return {
+        id: 'unassigned',
+        name: 'unassigned',
+        purpose: 'No role selected. Call aegis_select_role to choose a role before performing any actions.',
+        writable_paths: [],
+        secondary_paths: [],
+        excluded_paths: [],
+        readable_paths: [],
+        autonomy: 'conservative',
+        forbidden_actions: ['All actions — no role has been selected yet.'],
+      };
+    }
+
+    // Fixed mode — use configured role
     const roleId = this.config.role;
 
     const role = state.roles.get(roleId);
@@ -115,7 +176,6 @@ export class PolicyLoader {
       return defaultRole;
     }
 
-    // Synthesize a permissive default if no role files exist
     this.log('No role files found, using synthesized permissive default');
     return {
       id: 'default',
@@ -178,42 +238,28 @@ export class PolicyLoader {
 
   /**
    * Merge skeleton and extension fields into a single ResolvedRole.
-   *
-   * Skeleton: role.name, role.purpose, scope.primary_paths/secondary_paths/excluded_paths
-   * Extensions: paths.read/write, forbidden_actions, autonomy (flat string)
-   *
-   * For writable paths: scope.primary_paths takes precedence; paths.write used as fallback.
-   * For readable paths: paths.read used when present; otherwise derived from writable + secondary.
    */
   private resolveRole(id: string, raw: RoleFile): ResolvedRole {
-    // Role identity — skeleton nested object, or flat string + description
     const name = typeof raw.role === 'object' ? raw.role.name : String(raw.role);
     const purpose = typeof raw.role === 'object'
       ? raw.role.purpose
       : (raw.description ?? '');
 
-    // Writable paths — skeleton primary_paths, or extension paths.write
     const writable_paths = raw.scope?.primary_paths?.length
       ? raw.scope.primary_paths
       : (raw.paths?.write ?? []);
 
-    // Secondary paths
     const secondary_paths = raw.scope?.secondary_paths ?? [];
-
-    // Excluded paths
     const excluded_paths = raw.scope?.excluded_paths ?? [];
 
-    // Readable paths — extension paths.read, or all writable + secondary
     const readable_paths = raw.paths?.read?.length
       ? raw.paths.read
       : [...writable_paths, ...secondary_paths];
 
-    // Autonomy — flat extension string or skeleton override
     const autonomy = raw.autonomy
       ? String(raw.autonomy)
       : 'advisory';
 
-    // Forbidden actions
     const forbidden_actions = raw.forbidden_actions ?? [];
 
     return {
