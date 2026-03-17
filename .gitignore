@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+.mcpregistry_*
+mcp-publisher
+mcp-publisher.tar.gz
+server.json.bak

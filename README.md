@@ -1,125 +1,141 @@
-# aegis-mcp-server
-<!-- mcp-name: io.github.cleburn/aegis-mcp -->
-**MCP enforcement layer for the [Aegis](https://github.com/cleburn/aegis-spec) agent governance specification.**
+# MCP Registry
 
-The spec writes the law. The CLI generates the law. This enforces the law.
+The MCP registry provides MCP clients with a list of MCP servers, like an app store for MCP servers.
 
-## What It Does
+[**📤 Publish my MCP server**](docs/guides/publishing/publish-server.md) | [**⚡️ Live API docs**](https://registry.modelcontextprotocol.io/docs) | [**👀 Ecosystem vision**](docs/explanations/ecosystem-vision.md) | 📖 **[Full documentation](./docs)**
 
-`aegis-mcp-server` is an MCP server that validates every agent action against your `.agentpolicy/` files **before** it happens. Path permissions, content scanning, role boundaries, quality gates — all enforced at runtime with zero token overhead to the agent.
+## Development Status
 
-The agent never loads your governance files. The MCP server reads them into its own process memory and validates silently. The agent calls governed tools and gets back either a success or a blocked response with the specific reason.
+**2025-09-08 update**: The registry has launched in preview 🎉 ([announcement blog post](https://blog.modelcontextprotocol.io/posts/2025-09-08-mcp-registry-preview/)). While the system is now more stable, this is still a preview release and breaking changes or data resets may occur. A general availability (GA) release will follow later. We'd love your feedback in [GitHub discussions](https://github.com/modelcontextprotocol/registry/discussions/new?category=ideas) or in the [#registry-dev Discord](https://discord.com/channels/1358869848138059966/1369487942862504016) ([joining details here](https://modelcontextprotocol.io/community/communication)).
 
-## Quick Start
+Current key maintainers:
+- **Adam Jones** (Anthropic) [@domdomegg](https://github.com/domdomegg)  
+- **Tadas Antanavicius** (PulseMCP) [@tadasant](https://github.com/tadasant)
+- **Toby Padilla** (GitHub) [@toby](https://github.com/toby)
+
+## Contributing
+
+We use multiple channels for collaboration - see [modelcontextprotocol.io/community/communication](https://modelcontextprotocol.io/community/communication).
+
+Often (but not always) ideas flow through this pipeline:
+
+- **[Discord](https://modelcontextprotocol.io/community/communication)** - Real-time community discussions
+- **[Discussions](https://github.com/modelcontextprotocol/registry/discussions)** - Propose and discuss product/technical requirements
+- **[Issues](https://github.com/modelcontextprotocol/registry/issues)** - Track well-scoped technical work  
+- **[Pull Requests](https://github.com/modelcontextprotocol/registry/pulls)** - Contribute work towards issues
+
+### Quick start:
+
+#### Pre-requisites
+
+- **Docker**
+- **Go 1.24.x** 
+- **golangci-lint v2.4.0**
+
+#### Running the server
 
 ```bash
-# Install globally
-npm install -g aegis-mcp-server
+# Start full development environment
+make dev-compose
 ```
 
-If you generated your policy with [aegis-cli](https://github.com/cleburn/aegis-cli), the `.mcp.json` connection config is already in your project root. Just install the MCP and open your agent — it connects automatically.
+This starts the registry at [`localhost:8080`](http://localhost:8080) with PostgreSQL and seed data. The database uses ephemeral storage and is reset each time you restart the containers, ensuring a clean state for development and testing.
 
-### First Prompt
+The setup can be configured with environment variables in [docker-compose.yml](./docker-compose.yml) - see [.env.example](./.env.example) for a reference.
 
-When starting a new agent session in a governed project, use this as your first prompt:
+<details>
+<summary>Alternative: Running a pre-built Docker image</summary>
 
-```
-Call aegis_policy_summary now. This is your governance contract — it defines your
-role, your boundaries, and which tools to use. Do not read files, do not take any
-action, and do not assume your role until you have called this tool.
-```
+Pre-built Docker images are automatically published to GitHub Container Registry:
 
-## How It Works
+```bash
+# Run latest stable release
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:latest
 
-### Universal Mode (Default)
+# Run latest from main branch (continuous deployment)
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main
 
-The MCP starts without a pre-assigned role. When the agent calls `aegis_policy_summary`, it receives the list of available roles from `.agentpolicy/roles/`. The agent presents them to the user, the user picks, and the agent calls `aegis_select_role` to lock in. All enforcement uses the selected role for the rest of the session.
+# Run specific release version
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:v1.0.0
 
-This is the default behavior — no configuration needed beyond the `.mcp.json` that `aegis init` creates automatically.
-
-### Fixed Mode
-
-If you know which role to assign at startup:
-
-```json
-{
-  "mcpServers": {
-    "aegis": {
-      "command": "aegis-mcp",
-      "args": ["--project", ".", "--role", "backend"]
-    }
-  }
-}
+# Run development build from main branch
+docker run -p 8080:8080 ghcr.io/modelcontextprotocol/registry:main-20250906-abc123d
 ```
 
-The MCP locks to that role immediately. `aegis_policy_summary` returns the role's boundaries directly, skipping role selection.
+**Available tags:** 
+- **Releases**: `latest`, `v1.0.0`, `v1.1.0`, etc.
+- **Continuous**: `main` (latest main branch build)
+- **Development**: `main-<date>-<sha>` (specific commit builds)
 
-## Tools
+</details>
 
-| Tool | What it does | Token cost |
-|------|-------------|------------|
-| `aegis_policy_summary` | Role boundaries and governance summary (or available roles in universal mode) | ~200 tokens |
-| `aegis_select_role` | Select a role in universal mode | Tiny |
-| `aegis_check_permissions` | Pre-check if an operation is allowed | Tiny |
-| `aegis_write_file` | Governed write with path + content validation | Same as a normal write |
-| `aegis_read_file` | Governed read with path validation | Same as a normal read |
-| `aegis_delete_file` | Governed delete with path validation | Tiny |
-| `aegis_execute` | Governed command execution | Command output only |
-| `aegis_complete_task` | Run quality gates before marking done | Gate results only |
-| `aegis_request_override` | Execute a blocked action after human confirmation | Tiny |
+#### Publishing a server
 
-## Zero Token Overhead
+To publish a server, we've built a simple CLI. You can use it with:
 
-Traditional approach: load governance files into the agent's context window. Token cost scales with policy complexity.
+```bash
+# Build the latest CLI
+make publisher
 
-Aegis MCP approach: the server loads policy into its own process memory. The agent calls tools and gets structured results. A project with 200 lines of governance has the same token cost as one with 20 lines. The complexity is absorbed by the server, not the agent.
+# Use it!
+./bin/mcp-publisher --help
+```
 
-## Enforcement
+See [the publisher guide](./docs/guides/publishing/publish-server.md) for more details.
 
-- **Governance boundaries** — `writable`, `read_only`, `forbidden` path lists
-- **Role scoping** — agents confined to their role's writable and readable paths
-- **Sensitive pattern detection** — content scanned against governance-defined patterns
-- **Cross-domain boundaries** — imports validated against shared interface rules
-- **Quality gate validation** — `pre_commit` flags mapped to `build_commands` and executed
-- **Override logging** — every blocked action logged to append-only `overrides.jsonl`
-- **Immutable policies** — designated rules that cannot be overridden, ever
+#### Other commands
 
-## Override Protocol
+```bash
+# Run lint, unit tests and integration tests
+make check
+```
 
-When an action is blocked and the governance override behavior is `warn_confirm_and_log`:
+There are also a few more helpful commands for development. Run `make help` to learn more, or look in [Makefile](./Makefile).
 
-1. The blocked response includes an `override_token` and the specific policy violated
-2. The agent presents the violation to the user
-3. If the user confirms, the agent calls `aegis_request_override` with the token and the user's rationale
-4. The action proceeds — the override is logged with `human_confirmed: true`
-5. Normal governance resumes immediately — the override is a one-time exception
-
-Immutable policies (e.g., HIPAA compliance, audit completeness) return `override_available: false` and cannot be overridden. The user must modify the governance through `aegis init`.
-
-## Consent-Based Governance
-
-The Aegis MCP does not override the agent's native directives. It introduces itself through tool descriptions, explains why governance is active, and asks the agent to seek user permission to route write operations through Aegis tools. The user's authority is the enforcement mechanism.
-
-Native tools for reading, searching, and exploring the codebase work fine without governance gating. Only write, delete, and execute operations benefit from routing through Aegis.
+<!--
+For Claude and other AI tools: Always prefer make targets over custom commands where possible.
+-->
 
 ## Architecture
 
+### Project Structure
+
 ```
-Agent ──→ aegis-mcp-server ──→ File System
-              │
-              ├── Loads .agentpolicy/ into process memory (once)
-              ├── Watches for policy changes (auto-reload)
-              ├── Validates every tool call against policy
-              ├── Returns success or blocked with override option
-              └── Logs all enforcement decisions to overrides.jsonl
+├── cmd/                     # Application entry points
+│   └── publisher/           # Server publishing tool
+├── data/                    # Seed data
+├── deploy/                  # Deployment configuration (Pulumi)
+├── docs/                    # Documentation
+├── internal/                # Private application code
+│   ├── api/                 # HTTP handlers and routing
+│   ├── auth/                # Authentication (GitHub OAuth, JWT, namespace blocking)
+│   ├── config/              # Configuration management
+│   ├── database/            # Data persistence (PostgreSQL)
+│   ├── service/             # Business logic
+│   ├── telemetry/           # Metrics and monitoring
+│   └── validators/          # Input validation
+├── pkg/                     # Public packages
+│   ├── api/                 # API types and structures
+│   │   └── v0/              # Version 0 API types
+│   └── model/               # Data models for server.json
+├── scripts/                 # Development and testing scripts
+├── tests/                   # Integration tests
+└── tools/                   # CLI tools and utilities
+    └── validate-*.sh        # Schema validation tools
 ```
 
-Three artifacts, one governance framework:
+### Authentication
 
-- [**aegis-spec**](https://github.com/cleburn/aegis-spec) — Writes the law
-- [**aegis-cli**](https://github.com/cleburn/aegis-cli) — Generates the law
-- **aegis-mcp-server** — Enforces the law
+Publishing supports multiple authentication methods:
+- **GitHub OAuth** - For publishing by logging into GitHub
+- **GitHub OIDC** - For publishing from GitHub Actions
+- **DNS verification** - For proving ownership of a domain and its subdomains
+- **HTTP verification** - For proving ownership of a domain
 
-## License
+The registry validates namespace ownership when publishing. E.g. to publish...:
+- `io.github.domdomegg/my-cool-mcp` you must login to GitHub as `domdomegg`, or be in a GitHub Action on domdomegg's repos
+- `me.adamjones/my-cool-mcp` you must prove ownership of `adamjones.me` via DNS or HTTP challenge
 
-MIT
+## More documentation
+
+See the [documentation](./docs) for more details if your question has not been answered here!
