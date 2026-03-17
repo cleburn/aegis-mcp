@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-16/server.schema.json",
   "name": "io.github.cleburn/aegis-mcp",
   "description": "Runtime enforcement layer for Aegis agent governance. Validates every agent action against .agentpolicy/ files before execution. Zero token overhead.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "repository": {
     "url": "https://github.com/cleburn/aegis-mcp",
     "source": "github"
@@ -18,7 +18,7 @@
     {
       "registryType": "npm",
       "identifier": "aegis-mcp-server",
-      "version": "0.1.10",
+      "version": "0.1.11",
       "transport": {
         "type": "stdio"
       }
