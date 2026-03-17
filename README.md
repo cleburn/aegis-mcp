@@ -1,5 +1,5 @@
 # aegis-mcp-server
-
+<!-- mcp-name: io.github.cleburn/aegis-mcp -->
 **MCP enforcement layer for the [Aegis](https://github.com/cleburn/aegis-spec) agent governance specification.**
 
 The spec writes the law. The CLI generates the law. This enforces the law.

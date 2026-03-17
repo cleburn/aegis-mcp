@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#79c0ff"/>
+      <stop offset="35%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#1f6feb"/>
+    </linearGradient>
+    <clipPath id="roundedBg">
+      <rect width="512" height="512" rx="80"/>
+    </clipPath>
+  </defs>
+
+  <!-- Rounded rectangle background -->
+  <rect width="512" height="512" rx="80" fill="#0d1117"/>
+
+  <!-- Outer shield (blue filled) -->
+  <path d="
+    M 256 56
+    L 120 116
+    L 120 248
+    C 120 348 178 432 256 472
+    C 334 432 392 348 392 248
+    L 392 116
+    Z
+  " fill="url(#shieldGrad)"/>
+
+  <!-- Inner shield cutout (dark) -->
+  <path d="
+    M 256 96
+    L 152 142
+    L 152 248
+    C 152 332 200 404 256 438
+    C 312 404 360 332 360 248
+    L 360 142
+    Z
+  " fill="#0d1117" opacity="0.87"/>
+
+  <!-- Policy line 1 (top, faintest) -->
+  <line x1="196" y1="212" x2="316" y2="212" 
+        stroke="#58a6ff" stroke-width="9" stroke-linecap="round" opacity="0.45"/>
+
+  <!-- Policy line 2 (middle) -->
+  <line x1="196" y1="252" x2="316" y2="252" 
+        stroke="#58a6ff" stroke-width="9" stroke-linecap="round" opacity="0.7"/>
+
+  <!-- Policy line 3 (shorter, full) -->
+  <line x1="196" y1="292" x2="288" y2="292" 
+        stroke="#58a6ff" stroke-width="9" stroke-linecap="round" opacity="1.0"/>
+
+  <!-- Checkmark -->
+  <polyline points="270,332 290,352 330,304" 
+            fill="none" stroke="#58a6ff" stroke-width="10" 
+            stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
