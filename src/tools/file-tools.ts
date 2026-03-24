@@ -5,9 +5,15 @@
  * governance, and asks the agent to seek user permission.
  *
  * ROLE SELECTION: In universal/auto mode, aegis_policy_summary returns
- * available roles. The agent presents them to the user, who picks one.
- * The agent calls aegis_select_role to lock in. All enforcement uses
- * the selected role thereafter.
+ * available roles (including the synthetic "construction" role). The agent
+ * presents them to the user, who picks one. The agent calls aegis_select_role
+ * to lock in. All enforcement uses the selected role thereafter.
+ *
+ * CONSTRUCTION MODE: When "construction" is selected, the MCP logs the
+ * session start to overrides.jsonl and instructs the agent to use native
+ * tools for file operations while following .agentpolicy/ as a blueprint.
+ * When aegis_complete_task is called during construction, the MCP logs
+ * the session end with a closing timestamp.
  *
  * OVERRIDE HANDSHAKE: Blocked actions return override tokens when policy
  * allows. Human confirms → agent calls aegis_request_override → action
@@ -46,8 +52,10 @@ export function registerTools(
       title: 'Select Role',
       description: `${GOVERNANCE_INTRO}Select a role for this session. Call this after aegis_policy_summary shows available roles and the user has chosen one. The MCP locks to the selected role for the remainder of the session — all enforcement uses this role's boundaries. This is a one-time selection per session.
 
+The "construction" role is available for initial builds and major restructuring. It grants full repo access using native tools, with governance files as the blueprint.
+
 Args:
-  - role_id (string): The role ID to select (e.g., "backend", "frontend", "qa")
+  - role_id (string): The role ID to select (e.g., "construction", "backend", "frontend", "qa")
 
 Returns:
   { "status": "role_selected", "role": "...", ... } or { "status": "error", "reason": "..." }`,
@@ -93,6 +101,36 @@ Returns:
       // Notify the main process to update engine references
       onRoleSelected(role);
 
+      // If construction mode was activated, log the opening entry
+      if (loader.isConstructionMode()) {
+        const engine = getEngine();
+        await engine.logOverride({
+          timestamp: loader.getConstructionStartedAt() ?? new Date().toISOString(),
+          policy_violated: 'construction_mode_activated',
+          policy_text: 'Construction mode — governance enforcement suspended for initial build. Agent uses native tools with .agentpolicy/ as blueprint.',
+          action_requested: 'construction_mode: start',
+          human_confirmed: true,
+          agent_role: 'construction',
+          rationale: 'Initial build — governance files used as blueprint, native tools for file operations',
+        });
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: 'role_selected',
+              role: 'construction',
+              role_name: 'Construction',
+              construction_mode: true,
+              started_at: loader.getConstructionStartedAt(),
+              message: 'Construction mode is now active. Read the .agentpolicy/ directory as your blueprint — constitution.json for architecture and principles, governance.json for conventions and quality gates, role files for module ownership and boundaries. Use your native tools for all file operations (not Aegis governed tools). When the build is complete, call aegis_complete_task to close construction mode. All future sessions after construction should select a specialist role for governed operations.',
+              instructions: 'Use native file tools for reads, writes, and deletes. Follow the governance files as your blueprint for architecture, conventions, and quality standards. The MCP is logging this construction session for the audit trail.',
+            }),
+          }],
+        };
+      }
+
+      // Normal role selection response
       return {
         content: [{
           type: 'text' as const,
@@ -518,7 +556,7 @@ Returns:
     'aegis_complete_task',
     {
       title: 'Complete Task',
-      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates.
+      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates. In construction mode, this also closes the construction session and logs the closing timestamp — all future sessions should select a specialist role for governed operations.
 
 Args:
   - task_id (string): Identifier for the task being completed
@@ -540,6 +578,47 @@ Returns:
     async ({ task_id, summary }) => {
       const engine = getEngine();
       const state = getState();
+
+      // If construction mode is active, log the closing entry
+      if (loader.isConstructionMode()) {
+        const startedAt = loader.getConstructionStartedAt();
+        const completedAt = new Date().toISOString();
+
+        await engine.logOverride({
+          timestamp: completedAt,
+          policy_violated: 'construction_mode_completed',
+          policy_text: 'Construction mode ended — governance enforcement resumes for all future sessions.',
+          action_requested: 'construction_mode: end',
+          human_confirmed: true,
+          agent_role: 'construction',
+          rationale: `Construction complete. Started: ${startedAt}. Summary: ${summary}`,
+        });
+
+        loader.endConstructionMode();
+
+        // Still run quality gates if configured
+        const gates = engine.getQualityGateCommands();
+        const results = await runQualityGates(gates, state.projectRoot);
+        const allPassed = results.every((r) => r.passed);
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: allPassed ? 'passed' : 'failed',
+              task_id,
+              summary,
+              construction_mode_closed: true,
+              construction_started_at: startedAt,
+              construction_completed_at: completedAt,
+              gates_run: results,
+              message: 'Construction mode is now closed. All future agent sessions should select a specialist role for governed operations. The construction session has been logged to the audit trail.',
+            }),
+          }],
+        };
+      }
+
+      // Normal (non-construction) task completion
       const gates = engine.getQualityGateCommands();
 
       if (gates.length === 0) {
@@ -557,26 +636,7 @@ Returns:
         };
       }
 
-      const results: Array<{ name: string; passed: boolean; output?: string }> = [];
-
-      for (const gate of gates) {
-        try {
-          const output = execSync(gate.command, {
-            cwd: state.projectRoot,
-            encoding: 'utf-8',
-            timeout: 120_000,
-          });
-          results.push({ name: gate.name, passed: true, output: output.slice(0, 500) });
-        } catch (err: unknown) {
-          const execErr = err as { stderr?: string; message?: string };
-          results.push({
-            name: gate.name,
-            passed: false,
-            output: (execErr.stderr ?? execErr.message ?? 'Failed').slice(0, 500),
-          });
-        }
-      }
-
+      const results = await runQualityGates(gates, state.projectRoot);
       const allPassed = results.every((r) => r.passed);
 
       return {
@@ -599,10 +659,11 @@ Returns:
     'aegis_policy_summary',
     {
       title: 'Policy Summary',
-      description: `${GOVERNANCE_INTRO}Get your governance summary. In universal mode (no role pre-assigned), this returns the list of available roles — present them to the user and ask which role to use, then call aegis_select_role. In fixed mode (role pre-assigned), this returns your role boundaries and governance rules. Call this FIRST before doing any work.
+      description: `${GOVERNANCE_INTRO}Get your governance summary. In universal mode (no role pre-assigned), this returns the list of available roles (including "construction" for initial builds) — present them to the user and ask which role to use, then call aegis_select_role. In fixed mode (role pre-assigned), this returns your role boundaries and governance rules. Call this FIRST before doing any work.
 
 Returns:
   Universal mode: { "mode": "role_selection_required", "available_roles": [...] }
+  Construction mode: { "mode": "construction_active", ... }
   Fixed/selected mode: { "governance_notice": "...", "role": "...", "writable_paths": [...], ... }`,
       inputSchema: {},
       annotations: {
@@ -628,6 +689,28 @@ Returns:
               project: state.constitution.project.name,
               available_roles: available,
               instructions: 'Present these roles to the user. Ask them to select one. Then call aegis_select_role with the chosen role_id. Do not take any other action until a role is selected.',
+            }),
+          }],
+        };
+      }
+
+      // Construction mode is active — return construction-specific guidance
+      if (loader.isConstructionMode()) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              mode: 'construction_active',
+              governance_notice: 'Construction mode is active. The .agentpolicy/ directory is your blueprint — read it for architecture, conventions, quality standards, and module ownership. Use your native tools for all file operations. When the build is complete, call aegis_complete_task to close construction mode.',
+              project: state.constitution.project.name,
+              role: 'construction',
+              started_at: loader.getConstructionStartedAt(),
+              blueprint_files: [
+                '.agentpolicy/constitution.json — project identity, tech stack, principles, module map',
+                '.agentpolicy/governance.json — conventions, quality gates, escalation rules, permissions',
+                '.agentpolicy/roles/ — module ownership and boundaries (reference for build structure)',
+              ],
+              instructions: 'Read the governance files as your blueprint. Use native tools for all file operations. Follow the conventions and quality standards defined in governance.json. When complete, call aegis_complete_task.',
             }),
           }],
         };
@@ -714,4 +797,35 @@ async function logBlocked(
     agent_role: role.id,
     rationale: 'Blocked by enforcement layer',
   });
+}
+
+/**
+ * Run quality gate commands and collect results.
+ * Extracted as a shared helper for both normal and construction completion.
+ */
+async function runQualityGates(
+  gates: Array<{ name: string; command: string }>,
+  projectRoot: string
+): Promise<Array<{ name: string; passed: boolean; output?: string }>> {
+  const results: Array<{ name: string; passed: boolean; output?: string }> = [];
+
+  for (const gate of gates) {
+    try {
+      const output = execSync(gate.command, {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+        timeout: 120_000,
+      });
+      results.push({ name: gate.name, passed: true, output: output.slice(0, 500) });
+    } catch (err: unknown) {
+      const execErr = err as { stderr?: string; message?: string };
+      results.push({
+        name: gate.name,
+        passed: false,
+        output: (execErr.stderr ?? execErr.message ?? 'Failed').slice(0, 500),
+      });
+    }
+  }
+
+  return results;
 }

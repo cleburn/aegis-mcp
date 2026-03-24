@@ -7,6 +7,11 @@
  * Supports "auto" role mode: when config.role is "auto" (or not specified),
  * no role is locked at startup. The agent selects a role at runtime via
  * aegis_select_role, and all enforcement uses the selected role thereafter.
+ *
+ * Construction mode: The "construction" role is always available for initial
+ * builds and major restructuring. It grants full repo access using native
+ * tools, with governance files serving as the blueprint. The MCP logs the
+ * session start and end to overrides.jsonl for audit trail purposes.
  */
 
 import { readFile, readdir, access } from 'node:fs/promises';
@@ -21,11 +26,27 @@ import type {
   AegisMcpConfig,
 } from '../types.js';
 
+// ─── Construction Role (synthetic, always available) ────────────────────────
+
+const CONSTRUCTION_ROLE: ResolvedRole = {
+  id: 'construction',
+  name: 'Construction',
+  purpose: 'Initial build or major restructuring — full repo access using native tools, governance files serve as blueprint. MCP logs the session but does not enforce write restrictions. Select this for greenfield builds or significant overhauls.',
+  writable_paths: ['**/*'],
+  secondary_paths: [],
+  excluded_paths: [],
+  readable_paths: ['**/*'],
+  autonomy: 'delegated',
+  forbidden_actions: [],
+};
+
 export class PolicyLoader {
   private state: PolicyState | null = null;
   private watcher: ReturnType<typeof watch> | null = null;
   private onReload?: () => void;
   private selectedRole: ResolvedRole | null = null;
+  private constructionMode = false;
+  private constructionStartedAt: string | null = null;
 
   constructor(private config: AegisMcpConfig) {}
 
@@ -114,9 +135,33 @@ export class PolicyLoader {
   }
 
   /**
+   * Whether construction mode is currently active.
+   */
+  isConstructionMode(): boolean {
+    return this.constructionMode;
+  }
+
+  /**
+   * Get the timestamp when construction mode was started.
+   */
+  getConstructionStartedAt(): string | null {
+    return this.constructionStartedAt;
+  }
+
+  /**
    * Select a role in auto mode. Returns the resolved role, or null if not found.
+   * Recognizes "construction" as a synthetic role that activates construction mode.
    */
   selectRole(roleId: string): ResolvedRole | null {
+    // Handle construction role selection
+    if (roleId === 'construction') {
+      this.selectedRole = CONSTRUCTION_ROLE;
+      this.constructionMode = true;
+      this.constructionStartedAt = new Date().toISOString();
+      this.log('Construction mode activated');
+      return CONSTRUCTION_ROLE;
+    }
+
     const state = this.getState();
     const role = state.roles.get(roleId);
     if (!role) return null;
@@ -127,14 +172,34 @@ export class PolicyLoader {
   }
 
   /**
+   * End construction mode. Called when aegis_complete_task fires
+   * during a construction session.
+   */
+  endConstructionMode(): void {
+    this.constructionMode = false;
+    this.log('Construction mode ended');
+  }
+
+  /**
    * Get all available roles as a summary list.
+   * Always includes the synthetic "construction" role.
    */
   getAvailableRoles(): Array<{ id: string; name: string; purpose: string }> {
     const state = this.getState();
     const roles: Array<{ id: string; name: string; purpose: string }> = [];
+
+    // Construction role is always first in the list
+    roles.push({
+      id: CONSTRUCTION_ROLE.id,
+      name: CONSTRUCTION_ROLE.name,
+      purpose: CONSTRUCTION_ROLE.purpose,
+    });
+
+    // Then all project-defined roles
     for (const [id, role] of state.roles) {
       roles.push({ id, name: role.name, purpose: role.purpose });
     }
+
     return roles;
   }
 
