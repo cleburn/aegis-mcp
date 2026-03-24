@@ -132,9 +132,9 @@ Agent ──→ aegis-mcp-server ──→ File System
 
 Three artifacts, one governance framework:
 
-- [**aegis-spec**](https://github.com/cleburn/aegis-spec) — Writes the law
-- [**aegis-cli**](https://github.com/cleburn/aegis-cli) — Generates the law
-- **aegis-mcp-server** — Enforces the law
+- [**aegis-spec**](https://github.com/cleburn/aegis-spec) — The governance standard
+- [**aegis-cli**](https://github.com/cleburn/aegis-cli) — Generates the governance
+- **aegis-mcp-server** — Enforces the governance
 
 ## License
 
