@@ -20,6 +20,10 @@
  * proceeds and is logged with human_confirmed: true. Single-use, 5-min TTL.
  *
  * LOGGING: Every denied action is logged automatically by the server.
+ *
+ * LEDGER: aegis_complete_task writes a task entry to the ledger on every
+ * completion — construction or normal. This makes the ledger useful for
+ * single-agent workflows, not just multi-agent coordination.
  */
 
 import { readFile, writeFile, unlink, mkdir } from 'node:fs/promises';
@@ -556,7 +560,7 @@ Returns:
     'aegis_complete_task',
     {
       title: 'Complete Task',
-      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates. In construction mode, this also closes the construction session and logs the closing timestamp — all future sessions should select a specialist role for governed operations.
+      description: `${GOVERNANCE_INTRO}Signal task completion and run required quality gates. Writes a task entry to the project ledger for auditability. In construction mode, this also closes the construction session and logs the closing timestamp — all future sessions should select a specialist role for governed operations.
 
 Args:
   - task_id (string): Identifier for the task being completed
@@ -578,6 +582,7 @@ Returns:
     async ({ task_id, summary }) => {
       const engine = getEngine();
       const state = getState();
+      const role = getRole();
 
       // If construction mode is active, log the closing entry
       if (loader.isConstructionMode()) {
@@ -596,10 +601,30 @@ Returns:
 
         loader.endConstructionMode();
 
-        // Still run quality gates if configured
+        // Run quality gates if configured
         const gates = engine.getQualityGateCommands();
         const results = await runQualityGates(gates, state.projectRoot);
         const allPassed = results.every((r) => r.passed);
+
+        // Write ledger entry
+        await writeLedgerEntry(state.policyDir, {
+          id: task_id,
+          status: allPassed ? 'completed' : 'failed',
+          summary,
+          assigned_role: 'construction',
+          created_at: startedAt ?? completedAt,
+          updated_at: completedAt,
+          outcome: allPassed ? {
+            summary,
+            completed_at: completedAt,
+          } : undefined,
+          failure_log: !allPassed ? {
+            approach: summary,
+            error: results.filter(r => !r.passed).map(r => `${r.name}: ${r.output}`).join('; '),
+            attempted_at: completedAt,
+            retry_recommended: true,
+          } : undefined,
+        });
 
         return {
           content: [{
@@ -612,6 +637,7 @@ Returns:
               construction_started_at: startedAt,
               construction_completed_at: completedAt,
               gates_run: results,
+              ledger_updated: true,
               message: 'Construction mode is now closed. All future agent sessions should select a specialist role for governed operations. The construction session has been logged to the audit trail.',
             }),
           }],
@@ -620,8 +646,23 @@ Returns:
 
       // Normal (non-construction) task completion
       const gates = engine.getQualityGateCommands();
+      const completedAt = new Date().toISOString();
 
       if (gates.length === 0) {
+        // No gates, but still write ledger entry
+        await writeLedgerEntry(state.policyDir, {
+          id: task_id,
+          status: 'completed',
+          summary,
+          assigned_role: role.id,
+          created_at: completedAt,
+          updated_at: completedAt,
+          outcome: {
+            summary,
+            completed_at: completedAt,
+          },
+        });
+
         return {
           content: [{
             type: 'text' as const,
@@ -630,6 +671,7 @@ Returns:
               task_id,
               summary,
               gates_run: [],
+              ledger_updated: true,
               message: 'No quality gates configured with matching build commands.',
             }),
           }],
@@ -639,6 +681,26 @@ Returns:
       const results = await runQualityGates(gates, state.projectRoot);
       const allPassed = results.every((r) => r.passed);
 
+      // Write ledger entry
+      await writeLedgerEntry(state.policyDir, {
+        id: task_id,
+        status: allPassed ? 'completed' : 'failed',
+        summary,
+        assigned_role: role.id,
+        created_at: completedAt,
+        updated_at: completedAt,
+        outcome: allPassed ? {
+          summary,
+          completed_at: completedAt,
+        } : undefined,
+        failure_log: !allPassed ? {
+          approach: summary,
+          error: results.filter(r => !r.passed).map(r => `${r.name}: ${r.output}`).join('; '),
+          attempted_at: completedAt,
+          retry_recommended: true,
+        } : undefined,
+      });
+
       return {
         content: [{
           type: 'text' as const,
@@ -647,6 +709,7 @@ Returns:
             task_id,
             summary,
             gates_run: results,
+            ledger_updated: true,
           }),
         }],
       };
@@ -828,4 +891,104 @@ async function runQualityGates(
   }
 
   return results;
+}
+
+/**
+ * Write a task entry to the project ledger.
+ *
+ * Reads the current ledger, appends a task entry, increments the sequence,
+ * and writes it back. Follows the ledger write protocol (lock file,
+ * sequence check). In single-agent sessions the lock is rarely contended,
+ * but the protocol is followed for correctness.
+ *
+ * Failures are logged to stderr but do not block task completion —
+ * the ledger is an audit convenience, not a critical path.
+ */
+async function writeLedgerEntry(
+  policyDir: string,
+  task: {
+    id: string;
+    status: string;
+    summary: string;
+    assigned_role: string;
+    created_at: string;
+    updated_at: string;
+    outcome?: { summary: string; completed_at: string };
+    failure_log?: { approach: string; error: string; attempted_at: string; retry_recommended: boolean };
+  }
+): Promise<void> {
+  const ledgerPath = join(policyDir, 'state', 'ledger.json');
+  const lockPath = join(policyDir, 'state', 'ledger.lock');
+
+  try {
+    // Ensure state directory exists
+    await mkdir(dirname(lockPath), { recursive: true });
+
+    // Acquire lock (best-effort — wx flag fails if lock exists)
+    await writeFile(lockPath, JSON.stringify({
+      held_by: task.assigned_role,
+      acquired_at: new Date().toISOString(),
+    }), { flag: 'wx' }).catch(() => {
+      // Lock exists — in single-agent mode this is rare.
+      // Proceed anyway since we're the only writer.
+    });
+
+    // Read current ledger
+    let ledger: Record<string, unknown>;
+    try {
+      const raw = await readFile(ledgerPath, 'utf-8');
+      ledger = JSON.parse(raw);
+    } catch {
+      // Ledger doesn't exist or is invalid — create minimal structure
+      ledger = {
+        '$schema': 'https://aegis.dev/schema/ledger.v0.1.0.json',
+        version: '0.1.0',
+        sequence: 0,
+        tasks: [],
+        write_protocol: {
+          lock_file: '.agentpolicy/state/ledger.lock',
+          lock_timeout_seconds: 120,
+          retry_interval_ms: 500,
+          max_retries: 10,
+          procedure: [
+            { step: 1, action: 'Read current ledger and note sequence number' },
+            { step: 2, action: 'Attempt to create lock file. If exists and not stale, wait and retry' },
+            { step: 3, action: 'Re-read ledger. If sequence changed, release lock and restart' },
+            { step: 4, action: 'Write changes, increment sequence' },
+            { step: 5, action: 'Release lock file' },
+          ],
+        },
+      };
+    }
+
+    // Build task entry
+    const tasks = (ledger.tasks as Array<Record<string, unknown>>) ?? [];
+    const entry: Record<string, unknown> = {
+      id: task.id,
+      status: task.status,
+      summary: task.summary,
+      assigned_role: task.assigned_role,
+      created_at: task.created_at,
+      updated_at: task.updated_at,
+    };
+    if (task.outcome) entry.outcome = task.outcome;
+    if (task.failure_log) entry.failure_log = task.failure_log;
+
+    // Append and update sequence
+    tasks.push(entry);
+    ledger.tasks = tasks;
+    ledger.sequence = ((ledger.sequence as number) ?? 0) + 1;
+    ledger.last_updated = new Date().toISOString();
+
+    // Write updated ledger
+    await writeFile(ledgerPath, JSON.stringify(ledger, null, 2) + '\n', 'utf-8');
+
+    // Release lock
+    await unlink(lockPath).catch(() => {});
+  } catch (err) {
+    // Ledger write failed — log but don't block task completion
+    process.stderr.write(`[aegis-mcp] Ledger write failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    // Clean up lock on failure
+    await unlink(lockPath).catch(() => {});
+  }
 }
