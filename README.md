@@ -1,5 +1,12 @@
 # aegis-mcp-server
 <!-- mcp-name: io.github.cleburn/aegis-mcp -->
+
+<p align="center">
+  <img src="https://img.shields.io/npm/v/aegis-mcp-server?style=flat&label=npm" alt="npm version" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat" alt="License: MIT" />
+  <img src="https://img.shields.io/badge/MCP-Registry-purple?style=flat" alt="MCP Registry" />
+</p>
+
 **MCP enforcement layer for the [Aegis](https://github.com/cleburn/aegis-spec) agent governance specification.**
 
 The spec writes the law. The CLI generates the law. This enforces the law.
