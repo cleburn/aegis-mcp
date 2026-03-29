@@ -13,6 +13,10 @@ The spec writes the law. The CLI generates the law. This enforces the law.
 
 ## What It Does
 
+<p align="center">
+  <img src="assets/Open-page.png" alt="Aegis Lifecycle Overview" width="800" />
+</p>
+
 `aegis-mcp-server` is an MCP server that validates every agent action against your `.agentpolicy/` files **before** it happens. Path permissions, content scanning, role boundaries, quality gates — all enforced at runtime with zero token overhead to the agent.
 
 The agent never loads your governance files. The MCP server reads them into its own process memory and validates silently. The agent calls governed tools and gets back either a success or a blocked response with the specific reason.
@@ -98,6 +102,10 @@ Aegis MCP approach: the server loads policy into its own process memory. The age
 
 ## Enforcement
 
+<p align="center">
+  <img src="assets/03-runtime.png" alt="Aegis Runtime Enforcement" width="800" />
+</p>
+
 - **Governance boundaries** — `writable`, `read_only`, `forbidden` path lists
 - **Role scoping** — agents confined to their role's writable and readable paths
 - **Sensitive pattern detection** — content scanned against governance-defined regex patterns (content only, not path-based)
@@ -108,6 +116,10 @@ Aegis MCP approach: the server loads policy into its own process memory. The age
 - **Construction session logging** — start and end timestamps for initial builds
 
 ## Override Protocol
+
+<p align="center">
+  <img src="assets/04-completion.png" alt="Aegis Completion" width="800" />
+</p>
 
 When an action is blocked and the governance override behavior is `warn_confirm_and_log`:
 
