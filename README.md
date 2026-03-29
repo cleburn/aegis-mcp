@@ -9,7 +9,7 @@
 
 **MCP enforcement layer for the [Aegis](https://github.com/cleburn/aegis-spec) agent governance specification.**
 
-The spec writes the law. The CLI generates the law. This enforces the law.
+Policy at the root. Enforcement at runtime. Accountability on every action.
 
 ## What It Does
 
